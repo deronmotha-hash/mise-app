@@ -52,6 +52,7 @@ const PATHS = {
   "arrow-right":'<path d="M5 12h14M13 6l6 6-6 6"/>',
   "chef-hat":'<path d="M12 3a5 5 0 0 1 4.546 2.914a5 5 0 0 1 5.454 4.586a4.99 4.99 0 0 1-2 4v1a2 2 0 0 1-2 2h-12a2 2 0 0 1-2-2v-1a4.99 4.99 0 0 1-2-4a5 5 0 0 1 5.454-4.586a5 5 0 0 1 4.546-2.914z"/><path d="M8 19v2M12 19v2M16 19v2"/>',
   bookmark:'<path d="M18 7v14l-6-4-6 4V7a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4z"/>',
+  download:'<path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2M7 11l5 5 5-5M12 4v12"/>',
 };
 
 function Icon({ name, size=16, color="currentColor", ariaLabel }) {
@@ -116,6 +117,15 @@ function SmartIngredientInput({ directory, onAdd, onSaveToDirectory, placeholder
   const hits = useMemo(() => q.trim() ? directory.filter(d => d.name.toLowerCase().includes(q.toLowerCase())).slice(0, 6) : [], [q, directory]);
 
   const selectItem = (d) => { onAdd(d); setQ(""); setOpen(false); };
+  const addFreeText = () => {
+    const trimmed = q.trim(); if (!trimmed) return;
+    const existing = directory.find(d => d.name.toLowerCase() === trimmed.toLowerCase());
+    if (existing) { selectItem(existing); return; }
+    const newItem = { id: uuid(), name: trimmed, qty: "", unit: "", cat: "Other" };
+    onAdd(newItem);
+    if (onSaveToDirectory) onSaveToDirectory({ name: trimmed, unit: "", cat: "Other" });
+    setQ(""); setOpen(false);
+  };
 
   return (
     <div style={{ position: "relative", zIndex: 30 }}>
@@ -128,7 +138,7 @@ function SmartIngredientInput({ directory, onAdd, onSaveToDirectory, placeholder
           if (e.key === "Enter" && q.trim()) {
             e.preventDefault();
             if (hits.length > 0) selectItem(hits[0]);
-            else { onAdd({ id: uuid(), name: q.trim(), qty: "", unit: "", cat: "Other" }); setQ(""); setOpen(false); }
+            else addFreeText();
           }
         }}
       />
@@ -252,12 +262,9 @@ function useAppState() {
   const [hidden,setHidden] = useState(()=>saved?.hidden||{});
   const [customGrocery,setCustomGrocery] = useState(()=>saved?.customGrocery||[]);
   const [dir,setDir] = useState(()=>saved?.dir||SEED_DIR);
-  const [hydrated,setHydrated] = useState(false);
-  useEffect(()=>{setHydrated(true);},[]);
   useEffect(()=>{
-    if(!hydrated)return;
-    try{localStorage.setItem("mise_v2",JSON.stringify({weeks,weekStart,plannerView,customRecipes,customTypes,checked,hidden,customGrocery,dir}));}catch{}
-  },[hydrated,weeks,weekStart,plannerView,customRecipes,customTypes,checked,hidden,customGrocery,dir]);
+    try{localStorage.setItem("mise_v2",JSON.stringify({weeks,weekStart,plannerView,customRecipes,customTypes,checked,hidden,customGrocery,dir}));}catch{/* quota or storage disabled */}
+  },[weeks,weekStart,plannerView,customRecipes,customTypes,checked,hidden,customGrocery,dir]);
   return {weeks,setWeeks,weekStart,setWeekStart,plannerView,setPlannerView,customRecipes,setCustomRecipes,customTypes,setCustomTypes,checked,setChecked,hidden,setHidden,customGrocery,setCustomGrocery,dir,setDir};
 }
 
@@ -360,7 +367,7 @@ function RecipeForm({initial,directory,onSave,onCancel,label,onSaveToDirectory})
         <div><Label>Serves</Label><div style={{marginTop:4}}><Stepper value={rec.servings||1} onChange={v=>setRec(p=>({...p,servings:v}))}/></div></div>
       </div>
       <Eyebrow style={{marginBottom:6}}>Ingredients</Eyebrow>
-      <div style={{marginBottom:10,position:"relative",zIndex:50}}><IngredientSearch directory={directory} placeholder="Search directory to add..." onSelect={d=>setRec(p=>({...p,ingredients:[...p.ingredients,{id:uuid(),name:d.name,qty:"",unit:d.unit,cat:d.cat}]}))}/></div>
+      <div style={{marginBottom:10,position:"relative",zIndex:50}}><SmartIngredientInput directory={directory} onSaveToDirectory={onSaveToDirectory} placeholder="Search directory to add..." onAdd={d=>setRec(p=>({...p,ingredients:[...p.ingredients,{id:uuid(),name:d.name,qty:"",unit:d.unit||"",cat:d.cat||"Produce"}]}))}/></div>
       {rec.ingredients.map((ing,i)=>(
         <div key={ing.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr auto",gap:6,marginBottom:6}}>
           <input style={{...Inp,padding:"8px 10px"}} placeholder="Name" value={ing.name} onChange={e=>updIng(i,"name",e.target.value)}/>
@@ -390,51 +397,161 @@ function RecipeForm({initial,directory,onSave,onCancel,label,onSaveToDirectory})
   );
 }
 
-function RecipeImporter({directory,onSave,onCancel}) {
+function RecipeImporter({directory,onSave,onCancel,onSaveToDirectory}) {
   const [url,setUrl]=useState("");
   const [status,setStatus]=useState("idle");
   const [errorMsg,setErrorMsg]=useState("");
   const [parsed,setParsed]=useState(null);
-  const handleImport=async()=>{
-    if(!url.trim())return;
-    setStatus("fetching");setErrorMsg("");setParsed(null);
-    try{
-      const proxyUrl=`https://api.allorigins.win/get?url=${encodeURIComponent(`https://www.justtherecipe.com/?url=${encodeURIComponent(url.trim())}`)}`;
-      const res=await fetch(proxyUrl);
-      if(!res.ok)throw new Error("Could not reach justtherecipe.com.");
-      const data=await res.json();
-      const doc=new DOMParser().parseFromString(data.contents,"text/html");
-      const name=doc.querySelector("h1")?.textContent?.trim()||"Imported recipe";
-      const servingsEl=doc.querySelector("[class*='serving'],[class*='yield'],[class*='portion'],[class*='serves']");
-      const sm=servingsEl?.textContent?.trim().match(/\d+/);
-      const servings=sm?parseInt(sm[0]):4;
-      const ingEls=doc.querySelectorAll(".ingredient,.wprm-recipe-ingredient,[class*='ingredient'],li");
-      const ingredients=[];
-      ingEls.forEach(el=>{
-        const text=el.textContent?.trim();
-        if(!text||text.length>120)return;
-        const m=text.match(/^([\d\s¼½¾⅓⅔⅛⅜⅝⅞\/\.]+)?\s*([a-zA-Z]+\.?)?\s+(.+)$/);
-        if(m)ingredients.push({id:uuid(),qty:m[1]?.trim()||"",unit:m[2]?.trim()||"",name:m[3]?.trim()||text,cat:"Other"});
-        else if(text.length>2)ingredients.push({id:uuid(),qty:"",unit:"",name:text,cat:"Other"});
-      });
-      const stepEls=doc.querySelectorAll(".step,.wprm-recipe-instruction-text,[class*='instruction'],[class*='step'],ol li");
-      const steps=[];
-      stepEls.forEach(el=>{const t=el.textContent?.trim();if(t&&t.length>10)steps.push(t);});
-      if(ingredients.length===0&&steps.length===0)throw new Error("Couldn't extract a recipe from that URL.");
-      setParsed({name,category:"",servings,ingredients:ingredients.length>0?ingredients:[{id:uuid(),qty:"",unit:"",name:"",cat:"Produce"}],steps:steps.length>0?steps:[""],image:null});
-      setStatus("done");
-    }catch(e){setStatus("error");setErrorMsg(e.message||"Something went wrong.");}
+
+  const cleanText = (s) => String(s||"").replace(/<[^>]*>/g," ").replace(/\s+/g," ").trim();
+
+  const findRecipeNode = (json) => {
+    const nodes = Array.isArray(json) ? json : [json];
+    for (const node of nodes) {
+      if (!node || typeof node !== "object") continue;
+      const t = node["@type"];
+      const types = Array.isArray(t) ? t : [t];
+      if (types.includes("Recipe")) return node;
+      if (node["@graph"]) {
+        const found = findRecipeNode(node["@graph"]);
+        if (found) return found;
+      }
+    }
+    return null;
   };
-  if(status==="done"&&parsed)return <RecipeForm initial={parsed} directory={directory} label="Imported recipe — review and save" onSave={onSave} onCancel={onCancel}/>;
+
+  const parseIngredient = (raw) => {
+    const text = cleanText(raw);
+    if (!text) return null;
+    const unitPattern = /^([\d\s½¼¾⅓⅔⅛⅜⅝⅞/.-]+)?\s*(tsp|teaspoon|teaspoons|tbsp|tablespoon|tablespoons|cup|cups|ml|g|kg|oz|lb|lbs|litre|liter|l|bunch|handful|pinch|slice|slices|clove|cloves|sprig|sprigs|head|heads|rasher|rashers|can|cans|tin|tins|pack|packs|sheet|sheets|sachet|sachets)\.?\s+(.+)/i;
+    const m = text.match(unitPattern);
+    if (m) return {id:uuid(),qty:(m[1]||"").trim(),unit:m[2].trim().toLowerCase(),name:m[3].trim(),cat:"Other"};
+    const m2 = text.match(/^([\d\s½¼¾⅓⅔⅛⅜⅝⅞/.-]+)\s+(.+)/);
+    if (m2) return {id:uuid(),qty:m2[1].trim(),unit:"",name:m2[2].trim(),cat:"Other"};
+    return {id:uuid(),qty:"",unit:"",name:text,cat:"Other"};
+  };
+
+  const flattenInstructions = (ins) => {
+    if (!ins) return [];
+    if (typeof ins === "string") return ins.split(/\n+|(?<=\.)\s+(?=[A-Z])/).map(cleanText).filter(Boolean);
+    if (!Array.isArray(ins)) ins = [ins];
+    const out = [];
+    for (const step of ins) {
+      if (typeof step === "string") { const c = cleanText(step); if (c) out.push(c); continue; }
+      if (step?.["@type"] === "HowToSection" && step.itemListElement) {
+        out.push(...flattenInstructions(step.itemListElement));
+        continue;
+      }
+      const t = cleanText(step?.text || step?.name);
+      if (t) out.push(t);
+    }
+    return out;
+  };
+
+  const handleImport = async () => {
+    if (!url.trim()) return;
+    setStatus("fetching"); setErrorMsg(""); setParsed(null);
+
+    const target = url.trim();
+    const proxies = [
+      (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+      (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+      (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+    ];
+
+    let html = null;
+    for (const build of proxies) {
+      try {
+        const res = await fetch(build(target), { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (text && text.length > 1000) { html = text; break; }
+      } catch { continue; }
+    }
+
+    if (!html) {
+      setStatus("error");
+      setErrorMsg("Couldn't reach the page. Check the URL or try again in a moment.");
+      return;
+    }
+
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+
+      let recipe = null;
+      for (const s of scripts) {
+        try {
+          const json = JSON.parse(s.textContent.trim());
+          recipe = findRecipeNode(json);
+          if (recipe) break;
+        } catch { continue; }
+      }
+
+      if (!recipe) {
+        setStatus("error");
+        setErrorMsg("No recipe data found on that page. Try a different source — BBC Good Food, NYT Cooking, AllRecipes, Serious Eats all work well.");
+        return;
+      }
+
+      const name = cleanText(recipe.name) || "Imported recipe";
+
+      let servings = 4;
+      let rawYield = recipe.recipeYield;
+      if (Array.isArray(rawYield)) rawYield = rawYield[0];
+      if (rawYield != null) {
+        const yMatch = String(rawYield).match(/\d+/);
+        if (yMatch) servings = parseInt(yMatch[0], 10);
+      }
+
+      let category = "";
+      const cat = recipe.recipeCategory || recipe.recipeCuisine;
+      if (cat) category = Array.isArray(cat) ? cleanText(cat[0]) : cleanText(cat);
+
+      let image = null;
+      const img = recipe.image;
+      if (img) {
+        if (typeof img === "string") image = img;
+        else if (Array.isArray(img)) image = typeof img[0] === "string" ? img[0] : img[0]?.url;
+        else if (img.url) image = img.url;
+      }
+
+      const ingArr = recipe.recipeIngredient || recipe.ingredients || [];
+      const ingredients = (Array.isArray(ingArr) ? ingArr : [ingArr])
+        .map(parseIngredient).filter(Boolean);
+
+      const steps = flattenInstructions(recipe.recipeInstructions);
+
+      if (ingredients.length === 0 && steps.length === 0) {
+        setStatus("error");
+        setErrorMsg("Found a recipe entry but no ingredients or steps. Try a different URL.");
+        return;
+      }
+
+      setParsed({
+        name, category, servings, image,
+        ingredients: ingredients.length ? ingredients : [{id:uuid(),qty:"",unit:"",name:"",cat:"Produce"}],
+        steps: steps.length ? steps : [""],
+      });
+      setStatus("done");
+    } catch {
+      setStatus("error");
+      setErrorMsg("Couldn't parse the recipe. The page may be unusual — try a different URL.");
+    }
+  };
+
+  if (status==="done" && parsed)
+    return <RecipeForm initial={parsed} directory={directory} onSaveToDirectory={onSaveToDirectory} label="Imported recipe — review and save" onSave={onSave} onCancel={onCancel}/>;
+
   return (
     <Card accent style={{marginBottom:16}}>
       <p style={{fontWeight:500,fontSize:15,margin:"0 0 4px",fontFamily:T.font.sans}}>Import from URL</p>
-      <p style={{fontSize:13,color:T.ink400,margin:"0 0 12px",fontFamily:T.font.sans}}>Paste a link to any recipe page and we'll extract ingredients and method automatically.</p>
+      <p style={{fontSize:13,color:T.ink400,margin:"0 0 12px",fontFamily:T.font.sans}}>Paste a recipe URL — works with BBC Good Food, NYT Cooking, AllRecipes, Serious Eats and most major recipe sites.</p>
       <Label htmlFor="imp-url">Recipe URL</Label>
       <input id="imp-url" style={{...Inp,marginTop:4,marginBottom:10}} placeholder="https://www.bbcgoodfood.com/recipes/..." value={url} onChange={e=>setUrl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")handleImport();}}/>
-      {status==="error"&&<p style={{fontSize:13,color:T.danger,margin:"0 0 10px",fontFamily:T.font.sans}}>{errorMsg}</p>}
+      {status==="error" && <p style={{fontSize:13,color:T.danger,margin:"0 0 10px",fontFamily:T.font.sans}}>{errorMsg}</p>}
       <div style={{display:"flex",gap:8}}>
-        <Btn style={{flex:1,justifyContent:"center"}} disabled={status==="fetching"} onClick={handleImport}>{status==="fetching"?"Fetching…":"Import recipe"}</Btn>
+        <Btn style={{flex:1,justifyContent:"center"}} disabled={status==="fetching"} onClick={handleImport}>{status==="fetching" ? "Fetching…" : "Import recipe"}</Btn>
         <Btn variant="ghost" style={{flex:1,justifyContent:"center"}} onClick={onCancel}>Cancel</Btn>
       </div>
     </Card>
@@ -478,15 +595,14 @@ function CookView({allRecipes,cookTarget,onCookTargetConsumed,weeks,allMealTypes
   const [showPlanner,setShowPlanner]=useState(false);
 
   useEffect(()=>{
-    if(cookTarget){
-      const recipe=allRecipes.find(r=>r.id===cookTarget.recipeId);
-      if(recipe){
-        setSelected(recipe);setCurrentStep(0);setCookTab("ingredients");
-        setCookServings(cookTarget.portions*(recipe.servings||4));
-      }
-      onCookTargetConsumed();
+    if(!cookTarget) return;
+    const recipe=allRecipes.find(r=>r.id===cookTarget.recipeId);
+    if(recipe){
+      setSelected(recipe);setCurrentStep(0);setCookTab("ingredients");
+      setCookServings(cookTarget.portions*(recipe.servings||4));
     }
-  },[cookTarget]);
+    onCookTargetConsumed();
+  },[cookTarget,allRecipes,onCookTargetConsumed]);
 
   const filtered=useMemo(()=>allRecipes.filter(r=>r.name.toLowerCase().includes(search.toLowerCase())||r.category.toLowerCase().includes(search.toLowerCase())),[allRecipes,search]);
   const openRecipe=r=>{setSelected(r);setCurrentStep(0);setCookTab("ingredients");setCookServings(r.servings||4);};
@@ -665,6 +781,7 @@ export default function App() {
   const addWeek=useCallback(()=>{if(weeks.length>=5)return;const id=uuid();setWeeks(ws=>[...ws,mkWeek(id,`Week ${ws.length+1}`)]);setActiveIdx(weeks.length);},[weeks.length,setWeeks]);
   const removeWeek=useCallback(id=>{if(weeks.length===1)return;setWeeks(ws=>ws.filter(w=>w.id!==id).map((w,i)=>({...w,label:`Week ${i+1}`})));setActiveIdx(i=>Math.max(0,i-1));},[weeks.length,setWeeks]);
   const confirmPlan=useCallback((wid,day,rid,mt,pts)=>updDay(wid,day,arr=>[...arr,{entryId:uuid(),recipeId:rid,mealType:mt,portions:pts}]),[updDay]);
+  const consumeCookTarget=useCallback(()=>setCookTarget(null),[]);
   const getName=useCallback(e=>allRecipes.find(x=>x.id===e.recipeId)?.name||"?",[allRecipes]);
 
   const handleSaveRecipe=useCallback(rec=>{
@@ -734,7 +851,7 @@ export default function App() {
               <div key={type} style={{marginBottom:6}}>
                 <SlotPill slot={type}/>
                 <div style={{paddingLeft:12,marginTop:4,display:"flex",flexDirection:"column",gap:3}}>
-                  {grouped[type].map((e,i)=>(
+                  {grouped[type].map(e=>(
                     <div key={e.entryIds[0]} style={{display:"flex",alignItems:"center",gap:6,fontSize:14,fontFamily:T.font.sans}}>
                       <span style={{flex:1,color:T.ink900}}>{getName(e)}</span>
                       {e.portions>1&&<span style={{fontSize:12,color:T.ink400,fontWeight:500}}>×{e.portions}</span>}
@@ -807,13 +924,13 @@ export default function App() {
           <div style={{padding:"20px 16px 0"}}>
             <PageHeader title="Recipes" action={
               <div style={{display:"flex",gap:6}}>
-                <Btn variant="ghost" style={{padding:"8px 12px",fontSize:13}} onClick={()=>{setShowImportRec(true);setShowAddRec(false);setEditingRec(null);}}><Icon name="arrow-right" size={14}/>Import</Btn>
+                <Btn variant="ghost" style={{padding:"8px 12px",fontSize:13}} onClick={()=>{setShowImportRec(true);setShowAddRec(false);setEditingRec(null);}}><Icon name="download" size={14}/>Import</Btn>
                 <Btn style={{padding:"8px 14px",fontSize:13}} onClick={()=>{setShowAddRec(true);setShowImportRec(false);setEditingRec(null);}}><Icon name="plus" size={14}/>Add</Btn>
               </div>
             }/>
             <div style={{marginBottom:14}}><input style={Inp} value={recSearch} onChange={e=>setRecSearch(e.target.value)} placeholder="Search by name or ingredient..."/></div>
-            {showImportRec&&<RecipeImporter directory={dir} onSave={rec=>{if(!rec.name.trim())return;setCustomRecipes(p=>[...p,{...rec,id:uuid(),ingredients:rec.ingredients.filter(i=>i.name.trim()),steps:rec.steps.filter(s=>s.trim())}]);setShowImportRec(false);}} onCancel={()=>setShowImportRec(false)}/>}
-            {showAddRec&&<RecipeForm initial={initRecipe()} directory={dir} label="New recipe" onSaveToDirectory={d=>setDir(p=>[...p,{...d,id:uuid()}])} onSave={rec=>{if(!rec.name.trim())return;setCustomRecipes(p=>[...p,{...rec,id:uuid(),ingredients:rec.ingredients.filter(i=>i.name.trim()),steps:rec.steps.filter(s=>s.trim())}]);setShowAddRec(false);}} onCancel={()=>setShowAddRec(false)}/>}
+            {showImportRec&&<RecipeImporter directory={dir} onSaveToDirectory={d=>setDir(p=>p.find(x=>x.name.toLowerCase()===d.name.toLowerCase())?p:[...p,{...d,id:uuid()}])} onSave={rec=>{if(!rec.name.trim())return;setCustomRecipes(p=>[...p,{...rec,id:uuid(),ingredients:rec.ingredients.filter(i=>i.name.trim()),steps:rec.steps.filter(s=>s.trim())}]);setShowImportRec(false);}} onCancel={()=>setShowImportRec(false)}/>}
+            {showAddRec&&<RecipeForm initial={initRecipe()} directory={dir} label="New recipe" onSaveToDirectory={d=>setDir(p=>p.find(x=>x.name.toLowerCase()===d.name.toLowerCase())?p:[...p,{...d,id:uuid()}])} onSave={rec=>{if(!rec.name.trim())return;setCustomRecipes(p=>[...p,{...rec,id:uuid(),ingredients:rec.ingredients.filter(i=>i.name.trim()),steps:rec.steps.filter(s=>s.trim())}]);setShowAddRec(false);}} onCancel={()=>setShowAddRec(false)}/>}
             {filteredRecipes.length===0&&<p style={{color:T.ink400,fontSize:14}}>No recipes found.</p>}
             {filteredRecipes.map(r=>{
               const isExp=expandedRec===r.id,showPl=plannerRec===r.id,isEd=editingRec?.id===r.id;
@@ -838,7 +955,7 @@ export default function App() {
                       <IconBtn variant="ghost" size={30} icon={isExp||showPl||isEd?"chevron-up":"chevron-down"} ariaLabel="Expand" onClick={()=>{if(isEd)return;if(isExp||showPl){setExpandedRec(null);setPlannerRec(null);}else{setExpandedRec(r.id);setPlannerRec(null);}}}/>
                     </div>
                   </div>
-                  {isEd&&<RecipeForm initial={{...r,steps:r.steps||[""],servings:r.servings||4,ingredients:r.ingredients.map(i=>({...i,id:i.id||uuid()}))}} directory={dir} label="Edit recipe" onSaveToDirectory={d=>setDir(p=>[...p,{...d,id:uuid()}])} onSave={handleSaveRecipe} onCancel={()=>setEditingRec(null)}/>}
+                  {isEd&&<RecipeForm initial={{...r,steps:r.steps||[""],servings:r.servings||4,ingredients:r.ingredients.map(i=>({...i,id:i.id||uuid()}))}} directory={dir} label="Edit recipe" onSaveToDirectory={d=>setDir(p=>p.find(x=>x.name.toLowerCase()===d.name.toLowerCase())?p:[...p,{...d,id:uuid()}])} onSave={handleSaveRecipe} onCancel={()=>setEditingRec(null)}/>}
                   {isExp&&!isEd&&<RecipeDetail recipe={r}/>}
                   {showPl&&!isEd&&<PlannerPanel recipe={r} weeks={weeks} allMealTypes={allMealTypes} allRecipes={allRecipes} onConfirm={confirmPlan} onClose={()=>setPlannerRec(null)}/>}
                 </Card>
@@ -847,7 +964,7 @@ export default function App() {
           </div>
         )}
 
-        {page==="cook"&&<CookView allRecipes={allRecipes} cookTarget={cookTarget} onCookTargetConsumed={()=>setCookTarget(null)} weeks={weeks} allMealTypes={allMealTypes} onConfirm={confirmPlan}/>}
+        {page==="cook"&&<CookView allRecipes={allRecipes} cookTarget={cookTarget} onCookTargetConsumed={consumeCookTarget} weeks={weeks} allMealTypes={allMealTypes} onConfirm={confirmPlan}/>}
 
         {page==="grocery"&&(
           <div style={{padding:"20px 16px 0"}}>
