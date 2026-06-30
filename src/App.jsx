@@ -6,7 +6,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
   l.href = "https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&display=swap";
   document.head.appendChild(l);
   const mv = document.querySelector('meta[name="viewport"]');
-  if (mv) mv.content = "width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no";
+  if (mv) mv.content = "width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover";
   const st = document.createElement("style");
   st.textContent = `*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;padding:0;height:100%;overflow:hidden}#root{height:100%}`;
   document.head.appendChild(st);
@@ -162,7 +162,12 @@ function SmartIngredientInput({ directory, onAdd, onSaveToDirectory, placeholder
 const ALL_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 const DEFAULT_MEAL_TYPES = ["Breakfast","Lunch","Dinner","Snack"];
 const CAT_ORDER = ["Produce","Meat","Fish","Dairy","Bakery","Dry Goods","Canned Goods","Condiments","Other"];
-const uuid = ()=>crypto.randomUUID();
+const uuid = () => {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch { /* fall through */ }
+  return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+};
 
 const BUILT_IN_RECIPES = [
   { id:"r1", name:"Spaghetti Bolognese", category:"Pasta", servings:4,
@@ -896,7 +901,7 @@ export default function App() {
   );
 
   return (
-    <div style={{fontFamily:T.font.sans,color:T.ink900,maxWidth:420,margin:"0 auto",background:T.ink0,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    <div style={{fontFamily:T.font.sans,color:T.ink900,maxWidth:420,margin:"0 auto",background:T.ink0,height:"100vh",minHeight:"100dvh",maxHeight:"100dvh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
       <div style={{flex:1,overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
 
         {page==="planner"&&(
@@ -1207,7 +1212,7 @@ export default function App() {
         )}
 
       </div>
-      <nav style={{display:"flex",borderTop:`1px solid ${T.border}`,background:T.ink0,padding:"8px 0 4px",flexShrink:0}}>
+      <nav style={{display:"flex",borderTop:`1px solid ${T.border}`,background:T.ink0,padding:"8px 0 calc(4px + env(safe-area-inset-bottom))",flexShrink:0}}>
         {nav.map(n=>{
           const act=page===n.id;
           return <button key={n.id} onClick={()=>setPage(n.id)} aria-label={n.label} aria-current={act?"page":undefined}
